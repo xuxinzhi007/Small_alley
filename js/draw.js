@@ -1,633 +1,208 @@
-import { ctx, SCREEN_WIDTH, SCREEN_HEIGHT, HUD_TOP, HUD_H, SAFE_BOTTOM } from './render.js';
-import { PLACES, ROADS, clockText } from './content.js';
+import { ctx, SCREEN_WIDTH, SCREEN_HEIGHT, HUD_TOP, SAFE_BOTTOM } from './render.js';
+import { PLACES, ROADS, placeById, clockText, opening, isOpen, residents, availableActions, bagActions, blocked, pathTo, travelCost, encounterChoice } from './world.js';
+import { drawScene } from './scenes.js';
 
-const INK = '#3a2c28';
-const PAPER = '#f3ecdf';
-const CARD = '#fffaf4';
-const ROSE = '#9c4548';
-
-function blit(image, dx, dy, size) {
-  if (!image) return;
-  ctx.drawImage(image, 0, 0, 16, 16, Math.round(dx), Math.round(dy), size, size);
+const C = { ink: '#263e39', muted: '#79877d', paper: '#f6f4eb', green: '#386b54', light: '#e5eddf', gold: '#c78a45', white: '#fffdf6' };
+function box(x, y, w, h, color, radius = 12) {
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius); ctx.fill();
 }
-
-function roundRect(x, y, w, h, r) {
-  const rr = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + rr, y);
-  ctx.arcTo(x + w, y, x + w, y + h, rr);
-  ctx.arcTo(x + w, y + h, x, y + h, rr);
-  ctx.arcTo(x, y + h, x, y, rr);
-  ctx.arcTo(x, y, x + w, y, rr);
-  ctx.closePath();
+function text(value, x, y, size = 13, color = C.ink, align = 'left') {
+  ctx.fillStyle = color; ctx.font = `${size}px sans-serif`; ctx.textAlign = align; ctx.textBaseline = 'middle'; ctx.fillText(String(value), x, y);
 }
-
-function wrap(text, maxWidth) {
-  const lines = [];
-  let line = '';
-  const source = text || '';
-  for (let i = 0; i < source.length; i += 1) {
-    const next = line + source.charAt(i);
-    if (line && ctx.measureText(next).width > maxWidth) {
-      lines.push(line);
-      line = source.charAt(i);
-    } else line = next;
+function lines(value, x, y, width, max = 2, size = 12, color = C.muted) {
+  ctx.font = `${size}px sans-serif`;
+  let line = ''; let row = 0;
+  const chars = Array.from(value);
+  for (let i = 0; i < chars.length; i += 1) {
+    if (ctx.measureText(line + chars[i]).width > width && line) {
+      text(line, x, y + row * 18, size, color); row += 1; line = '';
+      if (row >= max) return;
+    }
+    line += chars[i];
+    if (row === max - 1 && i < chars.length - 1 && ctx.measureText(line + chars[i + 1] + '…').width > width) {
+      text(`${line}…`, x, y + row * 18, size, color); return;
+    }
   }
-  if (line) lines.push(line);
-  return lines;
+  if (line) text(line, x, y + row * 18, size, color);
 }
-
-function placeById(id) {
-  for (let i = 0; i < PLACES.length; i += 1) {
-    if (PLACES[i].id === id) return PLACES[i];
-  }
-  return PLACES[0];
+function spot(state, id, x, y, w, h) { state.hotspots.push({ id, x, y, w, h }); }
+function button(state, id, label, x, y, w, h, active = false) {
+  box(x, y, w, h, active ? C.green : C.white, 10);
+  text(label, x + w / 2, y + h / 2, 13, active ? C.white : C.ink, 'center');
+  spot(state, id, x, y, w, h);
 }
-
-function mapBox() {
-  return {
-    x: 14,
-    y: HUD_TOP,
-    w: SCREEN_WIDTH - 28,
-    h: SCREEN_HEIGHT - HUD_TOP - SAFE_BOTTOM - 12,
-  };
+function point(id) {
+  const p = placeById(id);
+  return { x: 30 + p.mx * 330, y: 197 + p.my * 244 };
 }
-
-function nodeCenter(place, box) {
-  return {
-    x: box.x + place.mx * box.w,
-    y: box.y + 18 + place.my * (box.h - 36),
-  };
+function dot(x, y, radius, color) {
+  ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
 }
-
-function drawMap(state, here, canGo) {
-  const box = mapBox();
-  const seen = state.life.seen || {};
-  ctx.fillStyle = 'rgba(42, 32, 28, 0.45)';
-  ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-  ctx.fillStyle = '#e4f0df';
-  roundRect(box.x, box.y, box.w, box.h, 22);
-  ctx.fill();
-  ctx.fillStyle = INK;
-  ctx.font = '18px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('这一带', box.x + 18, box.y + 28);
-  ctx.fillStyle = '#8a726c';
-  ctx.font = '12px sans-serif';
-  ctx.fillText('点一个地方走进去。点脚下这个，地图收起。', box.x + 18, box.y + 52);
-  ctx.strokeStyle = '#f7f4ee';
-  ctx.lineWidth = 14;
-  ctx.lineCap = 'round';
-  const field = { x: box.x + 8, y: box.y + 72, w: box.w - 16, h: box.h - 88 };
-  ROADS.forEach((pair) => {
-    if (!seen[pair[0]] || !seen[pair[1]]) return;
-    const from = nodeCenter(placeById(pair[0]), field);
-    const to = nodeCenter(placeById(pair[1]), field);
-    ctx.beginPath();
-    ctx.moveTo(from.x, from.y);
-    ctx.lineTo(to.x, to.y);
-    ctx.stroke();
+function mapScene(state, now) {
+  const world = state.world;
+  const night = world.clock >= 19 * 60;
+  const rain = world.weather === 'rainy';
+  box(0, 155, 390, 279, night ? '#314b46' : rain ? '#b9cec5' : '#d9e6c7', 20);
+  text('小巷街区', 18, 175, 12, night ? '#e8eee0' : C.green);
+  text(`${rain ? '细雨' : world.weather === 'breezy' ? '微风' : '晴天'} · 点击建筑探索`, 372, 175, 11, night ? '#e8eee0' : C.green, 'right');
+  const route = pathTo(world.place, state.selected);
+  ROADS.forEach(([a, b]) => {
+    const from = point(a); const to = point(b);
+    ctx.strokeStyle = '#f3efda'; ctx.lineWidth = 13; ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke();
+    if (route.some((id, index) => index && ((route[index - 1] === a && id === b) || (route[index - 1] === b && id === a)))) {
+      ctx.strokeStyle = '#dba45b'; ctx.lineWidth = 3; ctx.stroke();
+    }
+  });
+  [[22, 267], [370, 324], [30, 394], [270, 220], [124, 220]].forEach(([x, y]) => {
+    box(x - 2, y, 4, 15, '#a28b66', 1); dot(x, y, 10, night ? '#3e6753' : '#8bb38b'); dot(x - 4, y - 4, 7, night ? '#49765d' : '#a0c397');
   });
   PLACES.forEach((place) => {
-    const mark = seen[place.id];
-    if (!mark) return;
-    const at = nodeCenter(place, field);
-    const w = place.name.length > 2 ? 72 : 56;
-    const h = 34;
-    const x = at.x - w / 2;
-    const y = at.y - h / 2;
-    const current = place.id === here.id;
-    if (current) ctx.fillStyle = ROSE;
-    else if (mark === 'near') ctx.fillStyle = '#efe6da';
-    else if (place.id === 'balcony') ctx.fillStyle = '#7ea36a';
-    else ctx.fillStyle = CARD;
-    roundRect(x, y, w, h, 10);
-    ctx.fill();
-    ctx.fillStyle = current || (mark === 'seen' && place.id === 'balcony') ? '#fffaf4' : (mark === 'near' ? '#a89890' : INK);
-    ctx.font = '13px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(place.name, at.x, at.y);
-    if (!canGo) return;
-    if (current) state.hotspots.push({ id: 'map-here', x, y, w, h });
-    else state.hotspots.push({ id: `go-${place.id}`, x, y, w, h });
+    const p = point(place.id); const selected = place.id === state.selected;
+    if (selected) box(p.x - 32, p.y - 24, 64, 54, '#efd29b', 10);
+    box(p.x - 23, p.y - 17, 46, 30, isOpen(world, place.id) ? '#fff8dc' : '#c4c9bc', 4);
+    box(p.x - 27, p.y - 20, 54, 8, place.zone === 'home' ? '#b48062' : '#658778', 3);
+    box(p.x - 15, p.y - 5, 9, 10, night && isOpen(world, place.id) ? '#f6ca74' : '#a9c1ba', 1);
+    box(p.x + 6, p.y - 5, 9, 18, '#bba785', 1);
+    text(place.name, p.x, p.y + 18, 11, night && !selected ? '#fff8dc' : C.ink, 'center');
+    residents(world, place.id).forEach((person, index) => dot(p.x + 22 + index * 6, p.y - 15, 3, C.gold));
+    spot(state, `place:${place.id}`, p.x - 32, p.y - 21, 64, 43);
   });
-  if (seen[here.id]) {
-    const heroAt = nodeCenter(here, field);
-    blit(state.art.hero, heroAt.x - 11, heroAt.y - 36, 22);
+  const hero = point(world.place);
+  dot(hero.x, hero.y + 4, 13, '#fffdf6');
+  if (state.art) ctx.drawImage(state.art.hero, 0, 0, 16, 16, hero.x - 12, hero.y - 15, 24, 24);
+  else dot(hero.x, hero.y, 7, C.green);
+  if (rain) {
+    ctx.strokeStyle = '#edf7f0'; ctx.globalAlpha = 0.4; ctx.lineWidth = 1;
+    for (let i = 0; i < 20; i += 1) {
+      const x = (i * 71 + now / 70) % 380; const y = 191 + (i * 43 + now / 30) % 220;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 3, y + 8); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
   }
 }
-
-function sheetLabel(text, x, y) {
-  ctx.fillStyle = ROSE;
-  ctx.font = '11px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, x, y);
-}
-
-function stepButton(state, id, x, y, label) {
-  ctx.fillStyle = '#fffaf4';
-  roundRect(x, y, 26, 26, 13);
-  ctx.fill();
-  ctx.fillStyle = INK;
-  ctx.font = '16px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(label, x + 13, y + 13);
-  state.hotspots.push({ id, x, y, w: 26, h: 26 });
-}
-
-function bodyTile(state, x, y, w, h, label, value, max, key) {
-  ctx.fillStyle = '#f6f0e6';
-  roundRect(x, y, w, h, 12);
-  ctx.fill();
-  ctx.fillStyle = '#8a726c';
-  ctx.font = '11px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(label, x + 10, y + 14);
-  ctx.fillStyle = INK;
-  ctx.font = '14px sans-serif';
-  ctx.textAlign = 'right';
-  ctx.fillText(value == null ? '—' : String(value), x + w - 10, y + 14);
-  const ratio = Math.max(0, Math.min(1, (Number(value) || 0) / max));
-  ctx.fillStyle = '#efe4d6';
-  roundRect(x + 10, y + 28, w - 78, 5, 2);
-  ctx.fill();
-  if (ratio > 0) {
-    ctx.fillStyle = ROSE;
-    roundRect(x + 10, y + 28, Math.max(5, (w - 78) * ratio), 5, 2);
-    ctx.fill();
-  }
-  if (key) {
-    stepButton(state, `edit-${key}-down`, x + w - 62, y + 26, '−');
-    stepButton(state, `edit-${key}-up`, x + w - 32, y + 26, '+');
-  }
-}
-
-function factTile(x, y, w, h, label, value) {
-  ctx.fillStyle = '#f6f0e6';
-  roundRect(x, y, w, h, 12);
-  ctx.fill();
-  ctx.fillStyle = '#8a726c';
-  ctx.font = '11px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(label, x + 10, y + 16);
-  ctx.fillStyle = INK;
-  ctx.font = '15px sans-serif';
-  ctx.fillText(value == null ? '—' : String(value), x + 10, y + 36);
-}
-
-function drawPerson(state) {
-  const life = state.life || {};
-  const person = life.person || {};
-  const box = mapBox();
-  const pad = 16;
-  const inner = box.w - pad * 2;
-  ctx.fillStyle = 'rgba(42, 32, 28, 0.45)';
-  ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-  ctx.fillStyle = CARD;
-  roundRect(box.x, box.y, box.w, box.h, 22);
-  ctx.fill();
-  ctx.save();
-  roundRect(box.x, box.y, box.w, box.h, 22);
-  ctx.clip();
-
-  ctx.fillStyle = '#f3e4df';
-  roundRect(box.x + pad, box.y + 16, 64, 64, 16);
-  ctx.fill();
-  blit(state.art.hero, box.x + pad + 8, box.y + 24, 48);
-  const creating = !!life.creating;
-  ctx.fillStyle = INK;
-  ctx.font = '22px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(person.name || '未命名', box.x + pad + 76, box.y + 34);
-  state.hotspots.push({ id: 'edit-name', x: box.x + pad + 76, y: box.y + 16, w: 120, h: 32 });
-  ctx.fillStyle = '#8a726c';
-  ctx.font = '12px sans-serif';
-  ctx.fillText(creating ? '这套是随机的，点名字可改' : '点名字修改', box.x + pad + 76, box.y + 54);
-  ctx.fillStyle = '#f6f0e6';
-  roundRect(box.x + pad + 76, box.y + 66, 72, 26, 13);
-  ctx.fill();
-  ctx.fillStyle = INK;
-  ctx.font = '13px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(person.sex || '女', box.x + pad + 112, box.y + 79);
-  state.hotspots.push({ id: 'edit-sex', x: box.x + pad + 76, y: box.y + 66, w: 72, h: 26 });
-  ctx.fillStyle = '#f3ecdf';
-  roundRect(box.x + box.w - 86, box.y + 22, 70, 28, 14);
-  ctx.fill();
-  ctx.fillStyle = INK;
-  ctx.font = '13px sans-serif';
-  ctx.fillText(creating ? '重随机' : '收起', box.x + box.w - 51, box.y + 36);
-  state.hotspots.push({
-    id: creating ? 'edit-roll' : 'person-close',
-    x: box.x + box.w - 86,
-    y: box.y + 22,
-    w: 70,
-    h: 28,
+function actionCards(state, list, y, now) {
+  list.forEach((item, index) => {
+    const x = (index % 2) * 199; const top = y + Math.floor(index / 2) * 72;
+    const reason = blocked(state.world, item, now);
+    box(x, top, 191, 64, reason ? '#ebece4' : C.white, 12);
+    text(item.label, x + 12, top + 19, 14, reason ? C.muted : C.green);
+    lines(reason || `${item.minutes ? `${item.minutes} 分钟 · ` : ''}${item.detail}`, x + 12, top + 40, 167, 2, 10, C.muted);
+    spot(state, `action:${item.id}`, x, top, 191, 64);
   });
-
-  const gap = 8;
-  const tileW = (inner - gap) / 2;
-  const tileY = box.y + 100;
-  const tiles = [
-    ['身高', person.height == null ? '—' : `${person.height} cm`, 'height'],
-    ['体重', person.weight == null ? '—' : `${person.weight} kg`, 'weight'],
-    ['视力', person.sight, 'sight'],
-    ['体温', person.temp == null ? '—' : `${person.temp} ℃`, 'temp'],
-    ['年龄', person.age == null ? '—' : `${person.age} 岁`, 'age'],
-  ];
-  tiles.forEach((tile, index) => {
-    const col = index % 2;
-    const row = Math.floor(index / 2);
-    const x = box.x + pad + col * (tileW + gap);
-    const ty = tileY + row * 58;
-    const wide = index === 4 ? inner : tileW;
-    factTile(x, ty, wide, 50, tile[0], tile[1]);
-    stepButton(state, `edit-${tile[2]}-down`, x + wide - 62, ty + 12, '−');
-    stepButton(state, `edit-${tile[2]}-up`, x + wide - 32, ty + 12, '+');
-  });
-
-  const birthY = tileY + 58 * 3;
-  factTile(box.x + pad, birthY, inner, 50, '生日', person.birthday || '—');
-  stepButton(state, 'edit-birthday-month-down', box.x + pad + inner - 148, birthY + 12, '−');
-  stepButton(state, 'edit-birthday-month-up', box.x + pad + inner - 118, birthY + 12, '+');
-  ctx.fillStyle = '#8a726c';
-  ctx.font = '11px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('月', box.x + pad + inner - 168, birthY + 25);
-  stepButton(state, 'edit-birthday-day-down', box.x + pad + inner - 62, birthY + 12, '−');
-  stepButton(state, 'edit-birthday-day-up', box.x + pad + inner - 32, birthY + 12, '+');
-  ctx.fillStyle = '#8a726c';
-  ctx.fillText('日', box.x + pad + inner - 82, birthY + 25);
-
-  let y = birthY + 66;
-  sheetLabel('身体', box.x + pad, y);
-  y += 14;
-  const bars = [
-    ['健康', person.health, 100, 'health'],
-    ['体力', person.stamina, 100, 'stamina'],
-    ['饥饿', person.hunger, 100, 'hunger'],
-    ['口渴', person.thirst, 100, 'thirst'],
-    ['清洁', person.clean, 100, 'clean'],
-    ['睡意', person.sleep, 100, 'sleep'],
-  ];
-  bars.forEach((row, index) => {
-    const col = index % 2;
-    const line = Math.floor(index / 2);
-    const x = box.x + pad + col * (tileW + gap);
-    const ty = y + line * 62;
-    bodyTile(state, x, ty, tileW, 56, row[0], row[1], row[2], row[3]);
-  });
-  ctx.restore();
-  const by = box.y + box.h - 58;
-  ctx.fillStyle = creating ? '#f6f0e6' : '#f3e4df';
-  roundRect(box.x + pad, by, creating ? (inner - 8) / 2 : inner, 42, 14);
-  ctx.fill();
-  ctx.fillStyle = INK;
-  ctx.font = '15px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  if (creating) {
-    ctx.fillText('再随机一套', box.x + pad + (inner - 8) / 4, by + 21);
-    state.hotspots.push({ id: 'edit-roll', x: box.x + pad, y: by, w: (inner - 8) / 2, h: 42 });
-    ctx.fillStyle = ROSE;
-    roundRect(box.x + pad + (inner + 8) / 2, by, (inner - 8) / 2, 42, 14);
-    ctx.fill();
-    ctx.fillStyle = '#fffaf4';
-    ctx.fillText('开始今天', box.x + pad + (inner + 8) / 2 + (inner - 8) / 4, by + 21);
-    state.hotspots.push({ id: 'edit-start', x: box.x + pad + (inner + 8) / 2, y: by, w: (inner - 8) / 2, h: 42 });
-  } else {
-    ctx.fillText('再随机一套', box.x + box.w / 2, by + 21);
-    state.hotspots.push({ id: 'edit-roll', x: box.x + pad, y: by, w: inner, h: 42 });
-  }
 }
-
-function drawBag(state) {
-  const life = state.life || {};
-  const box = mapBox();
-  const bag = life.pocket || [];
-  ctx.fillStyle = 'rgba(42, 32, 28, 0.45)';
-  ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-  ctx.fillStyle = CARD;
-  roundRect(box.x, box.y, box.w, box.h, 22);
-  ctx.fill();
-  ctx.fillStyle = INK;
-  ctx.font = '22px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('背包', box.x + 20, box.y + 36);
-  ctx.fillStyle = '#f3ecdf';
-  roundRect(box.x + box.w - 86, box.y + 22, 70, 28, 14);
-  ctx.fill();
-  ctx.fillStyle = INK;
-  ctx.font = '13px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('收起', box.x + box.w - 51, box.y + 36);
-  state.hotspots.push({ id: 'bag-close', x: box.x + box.w - 86, y: box.y + 22, w: 70, h: 28 });
-  let y = box.y + 78;
-  if (!bag.length) {
-    ctx.fillStyle = '#8a726c';
-    ctx.font = '14px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText('还是空的', box.x + 20, y);
+function district(state, now) {
+  mapScene(state, now);
+  const world = state.world; const place = placeById(state.selected);
+  const here = world.place === place.id; const cost = travelCost(world, place.id);
+  text(place.name, 4, 459, 21);
+  text(here ? '你在这里' : `预计 ${cost.minutes} 分钟 · 体力 −${cost.effort}`, 386, 459, 12, C.green, 'right');
+  const people = residents(world, place.id);
+  text(`${opening(place.id)}${!isOpen(world, place.id) ? ' · 已打烊' : ''}${people.length ? ` · ${people.map((p) => p.name).join('、')}在这里` : ''}`, 4, 486, 12, C.muted);
+  lines(here ? '收起地图，回到眼前的生活。' : `${place.blurb} ${cost.reason}。`, 4, 516, 370, 2, 13);
+  button(state, here ? 'close-panel' : `travel:${place.id}`, here ? '回到场景' : `出发，去${place.name}`, 0, 570, 390, 46, true);
+}
+function bag(state, now) {
+  text('随身背包', 4, 184, 23);
+  text('买到的东西可以随时使用，不用等待事件。', 4, 216, 12, C.muted);
+  const world = state.world;
+  [['关东煮 / 便当', world.bag.snack], ['瓶装水', world.bag.water], ['新鲜食材', world.bag.groceries], ['鲜花', world.bag.flower], ['花种', world.seeds]].forEach(([label, count], index) => {
+    const y = 245 + index * 45; box(0, y, 390, 38, C.white, 9); text(label, 14, y + 19); text(`× ${count}`, 374, y + 19, 14, C.green, 'right');
+  });
+  actionCards(state, bagActions(world), 498, now);
+  lines('食材要带回家烹饪；花种可以种在公园，鲜花可以在菜市场出售。', 4, 603, 380, 2, 13);
+}
+function journal(state) {
+  text('小巷手记', 4, 184, 23);
+  text('不是任务清单，是你在这里生活过的痕迹。', 4, 216, 12, C.muted);
+  state.world.journal.slice(-7).reverse().forEach((entry, index) => {
+    const y = 244 + index * 57;
+    text(`第 ${entry.day} 天`, 4, y + 8, 10, C.gold);
+    lines(entry.text, 65, y + 8, 316, 2, 12, C.ink);
+    box(0, y + 43, 390, 1, C.light, 0);
+  });
+}
+function dialogueCard(state, now) {
+  const dialogue = state.dialogue;
+  if (!dialogue) {
+    text('把脚步慢下来', 10, 493, 21);
+    lines('点场景中的物件，或者和身边的人说句话。每一次出门，都可能遇见一点不同。', 10, 530, 368, 3, 14);
+    button(state, 'look', '留意周围', 0, 602, 190, 40);
+    button(state, 'actions', '我想做点什么', 200, 602, 190, 40, true);
     return;
   }
-  bag.forEach((item) => {
-    ctx.fillStyle = '#f6f0e6';
-    roundRect(box.x + 16, y, box.w - 32, 44, 12);
-    ctx.fill();
-    ctx.fillStyle = INK;
-    ctx.font = '16px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(item.name, box.x + 28, y + 22);
-    ctx.textAlign = 'right';
-    ctx.fillStyle = '#8a726c';
-    ctx.fillText(`×${item.qty}`, box.x + box.w - 28, y + 22);
-    y += 52;
-  });
-}
-function drawDay(state) {
-  const life = state.life || {};
-  const card = state.card || {};
-  const weather = life.weather === 'rainy' ? '下雨' : (life.weather === 'breezy' ? '有风' : '晴');
-  const top = HUD_TOP + HUD_H;
-  const boxH = SCREEN_HEIGHT - top - SAFE_BOTTOM - 16;
-  const x = 16;
-  const w = SCREEN_WIDTH - 32;
-  ctx.fillStyle = CARD;
-  roundRect(x, top, w, boxH, 22);
-  ctx.fill();
-  ctx.save();
-  ctx.beginPath();
-  roundRect(x, top, w, boxH, 22);
-  ctx.clip();
-  ctx.fillStyle = ROSE;
-  ctx.font = '12px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  ctx.fillText('今日', x + 20, top + 18);
-  ctx.fillStyle = INK;
-  ctx.font = '22px sans-serif';
-  ctx.fillText(card.title || `第 ${life.day || 1} 天`, x + 20, top + 38);
-  ctx.fillStyle = '#8a726c';
-  ctx.font = '13px sans-serif';
-  ctx.fillText(`${weather}  ·  到 ${clockText(life.clock)}`, x + 20, top + 70);
-  const facts = [
-    ['硬币', life.coins],
-    ['精神', life.spirit],
-    ['文化', life.culture],
-    ['邻里', life.neighbor],
-  ];
-  const factW = (w - 40 - 18) / 4;
-  facts.forEach((item, index) => {
-    const fx = x + 20 + index * (factW + 6);
-    ctx.fillStyle = '#f6f0e6';
-    roundRect(fx, top + 96, factW, 44, 12);
-    ctx.fill();
-    ctx.fillStyle = '#8a726c';
-    ctx.font = '11px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(item[0], fx + factW / 2, top + 108);
-    ctx.fillStyle = INK;
-    ctx.font = '15px sans-serif';
-    ctx.fillText(String(item[1] == null ? 0 : item[1]), fx + factW / 2, top + 126);
-  });
-  let y = top + 156;
-  ctx.textAlign = 'left';
-  ctx.fillStyle = INK;
-  ctx.font = '15px sans-serif';
-  ctx.fillText(card.text || '这一天大多时候只是待在一起。', x + 20, y);
-  y += 28;
-  ctx.font = '14px sans-serif';
-  const lines = [];
-  (card.lines || []).forEach((block) => {
-    wrap(block, w - 40).forEach((line) => lines.push(line));
-  });
-  const missed = [];
-  (card.missed || []).forEach((block) => {
-    wrap(block, w - 40).forEach((line) => missed.push(line));
-  });
-  const room = top + boxH - 78 - y;
-  const lineH = 22;
-  const slots = Math.max(1, Math.floor(room / lineH));
-  const keep = lines.length > slots ? slots - 1 : lines.length;
-  ctx.fillStyle = INK;
-  lines.slice(0, keep).forEach((block) => {
-    ctx.fillText(block, x + 20, y);
-    y += lineH;
-  });
-  if (lines.length > keep) {
-    ctx.fillStyle = '#8a726c';
-    ctx.fillText(`还有 ${lines.length - keep} 行，记在小记里`, x + 20, y);
-    y += lineH;
-  }
-  ctx.fillStyle = '#a89890';
-  missed.forEach((block) => {
-    if (y > top + boxH - 84) return;
-    ctx.fillText(block, x + 20, y);
-    y += lineH;
-  });
+  const drag = state.dragX || 0;
+  box(5, 475, 380, 125, drag < 0 ? '#e6d5c4' : '#d1e0c9', 17);
+  text(drag < 0 ? dialogue.left : dialogue.right, drag < 0 ? 350 : 40, 527, 17, C.green, drag < 0 ? 'right' : 'left');
+  ctx.save(); ctx.translate(195 + drag, 535); ctx.rotate(drag / 1500); ctx.translate(-195, -535);
+  box(5, 475, 380, 125, C.white, 17);
+  dot(30, 499, 11, '#e4ccb0');
+  text(dialogue.speaker.slice(0, 1), 30, 499, 12, '#87684d', 'center');
+  text(dialogue.speaker, 49, 499, 12, C.gold);
+  text(dialogue.title, 368, 499, 12, C.green, 'right');
+  const visible = state.revealed ? dialogue.text : dialogue.text.slice(0, Math.floor((now - state.dialogueAt) / 25));
+  lines(visible, 20, 527, 350, 4, 13, C.ink);
   ctx.restore();
-  const by = top + boxH - 62;
-  ctx.fillStyle = ROSE;
-  roundRect(x + 20, by, w - 40, 46, 16);
-  ctx.fill();
-  ctx.fillStyle = '#fffaf4';
-  ctx.font = '16px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('开始第二天', x + w / 2, by + 23);
-  if (!state.busy && !state.bagOpen && !state.personOpen) {
-    state.hotspots.push({ id: 'day-next', x: x + 20, y: by, w: w - 40, h: 46 });
-  }
+  spot(state, 'dialogue', 5, 475, 380, 125);
+  button(state, 'choice:left', `‹ ${dialogue.left}`, 0, 605, 191, 39);
+  button(state, 'choice:right', `${dialogue.right} ›`, 199, 605, 191, 39, true);
+  if (dialogue.kind === 'event') {
+    const choice = encounterChoice(state.world, drag < 0 ? -1 : 1);
+    if (choice) text(choice.reason || `预计 ${choice.minutes} 分钟 · 左右滑动回应`, 195, 655, 10, choice.reason ? '#a36c59' : C.muted, 'center');
+  } else text('点文字立即读完 · 左右滑动选择，也可以点按钮', 195, 655, 10, C.muted, 'center');
 }
-
-function choice(state, id, label, x, y, w, h, hot) {
-  ctx.fillStyle = hot ? ROSE : CARD;
-  roundRect(x, y, w, h, 16);
-  ctx.fill();
-  ctx.fillStyle = hot ? '#fffaf4' : INK;
-  ctx.font = '15px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const lines = wrap(label, w - 16).slice(0, 2);
-  lines.forEach((line, index) => {
-    ctx.fillText(line, x + w / 2, y + h / 2 + (index - (lines.length - 1) / 2) * 18);
-  });
-  if (!state.busy && !state.mapOpen && !state.personOpen && !state.bagOpen) state.hotspots.push({ id, x, y, w, h });
-}
-
-export function render(state) {
-  ctx.imageSmoothingEnabled = false;
+export function render(state, now = Date.now()) {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+  const scale = Math.min((SCREEN_WIDTH - 24) / 390, (SCREEN_HEIGHT - HUD_TOP - SAFE_BOTTOM - 8) / 710);
+  state.layout = { scale, x: (SCREEN_WIDTH - 390 * scale) / 2, y: HUD_TOP };
   state.hotspots = [];
-  ctx.fillStyle = PAPER;
-  ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-  if (!state.ready || !state.art || !state.card) {
-    ctx.fillStyle = INK;
-    ctx.font = '16px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(state.failed ? '画面没有载入' : '她在翻今天的牌…', SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2);
-    return;
-  }
-  const life = state.life || {};
-  if (life.creating) {
-    drawPerson(state);
-    return;
-  }
-  const card = state.card;
-  const weather = life.weather === 'rainy' ? '下雨' : (life.weather === 'breezy' ? '有风' : '晴');
-  const here = PLACES.filter((place) => place.id === (life.place || 'bed'))[0] || PLACES[0];
-  let y = HUD_TOP;
-  ctx.fillStyle = INK;
-  ctx.font = '15px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(`小巷物语  第 ${life.day || 1} 天  ${clockText(life.clock)}  ${state.period || '清晨'}`, 16, y + 12);
-  ctx.fillStyle = CARD;
-  roundRect(SCREEN_WIDTH - 78, y, 62, 26, 13);
-  ctx.fill();
-  ctx.fillStyle = ROSE;
-  ctx.font = '13px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('地图', SCREEN_WIDTH - 47, y + 13);
-  if (!state.mapOpen && !state.personOpen && !state.bagOpen && !state.busy) state.hotspots.push({ id: 'map-open', x: SCREEN_WIDTH - 78, y, w: 62, h: 26 });
-  ctx.textAlign = 'left';
-  const start = 7 * 60;
-  const end = 22 * 60;
-  const span = Math.max(0, Math.min(1, ((life.clock || start) - start) / (end - start)));
-  y += 28;
-  ctx.fillStyle = '#e0d3c4';
-  roundRect(16, y, SCREEN_WIDTH - 32, 6, 3);
-  ctx.fill();
-  ctx.fillStyle = ROSE;
-  roundRect(16, y, Math.max(6, (SCREEN_WIDTH - 32) * span), 6, 3);
-  ctx.fill();
-  y += 18;
-  const person = life.person || {};
-  ctx.fillStyle = CARD;
-  roundRect(16, y, 168, 40, 20);
-  ctx.fill();
-  blit(state.art.hero, 22, y + 6, 28);
-  ctx.fillStyle = INK;
-  ctx.font = '15px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(person.name || '未命名', 56, y + 20);
-  ctx.fillStyle = CARD;
-  roundRect(SCREEN_WIDTH - 78, y + 4, 62, 32, 16);
-  ctx.fill();
-  ctx.fillStyle = INK;
-  ctx.font = '12px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(`包 ${(life.pocket || []).length}`, SCREEN_WIDTH - 47, y + 20);
-  if (!state.mapOpen && !state.personOpen && !state.bagOpen && !state.busy) {
-    state.hotspots.push({ id: 'person-open', x: 16, y, w: 168, h: 40 });
-    state.hotspots.push({ id: 'bag-open', x: SCREEN_WIDTH - 78, y: y + 4, w: 62, h: 32 });
-  }
-  const chipY = y + 48;
-  const chips = [
-    ['硬币', life.coins],
-    ['种子', life.seeds],
-    ['文化', life.culture],
-    ['邻里', life.neighbor],
-  ];
-  const chipW = (SCREEN_WIDTH - 32 - 18) / 4;
-  chips.forEach((item, index) => {
-    const cx = 16 + index * (chipW + 6);
-    ctx.fillStyle = CARD;
-    roundRect(cx, chipY, chipW, 32, 12);
-    ctx.fill();
-    ctx.fillStyle = '#8a726c';
-    ctx.font = '10px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(item[0], cx + chipW / 2, chipY + 11);
-    ctx.fillStyle = INK;
-    ctx.font = '13px sans-serif';
-    ctx.fillText(String(item[1] == null ? 0 : item[1]), cx + chipW / 2, chipY + 23);
+  ctx.save(); ctx.translate(state.layout.x, state.layout.y); ctx.scale(scale, scale);
+  const world = state.world;
+  text(placeById(state.viewPlace).name, 0, 14, 24);
+  text(`第 ${world.day} 天 · ${clockText(world.clock)}`, 390, 14, 14, C.green, 'right');
+  text(`${world.name} · 点击改名`, 0, 39, 11, C.muted); spot(state, 'name', 0, 25, 195, 23);
+  text(`${world.coins} 硬币`, 390, 39, 13, C.gold, 'right');
+  [['体力', world.stamina, C.green], ['饥饿', world.hunger, C.gold], ['口渴', world.thirst, '#698fa0']].forEach(([label, value, color], i) => {
+    const x = i * 133; box(x, 57, 124, 39, C.white, 10);
+    text(label, x + 10, 70, 11, C.muted); text(Math.round(value), x + 112, 70, 12, color, 'right');
+    box(x + 10, 83, 104, 4, C.light, 2); if (value > 0) box(x + 10, 83, Math.max(4, value * 1.04), 4, color, 2);
   });
-  if (life.hint) {
-    ctx.fillStyle = ROSE;
-    ctx.font = '12px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(life.hint, 16, chipY + 46);
+  const motion = { hero: state.hero, freezePeople: !!state.dialogue || !!state.approach };
+  let fade = 0;
+  if (state.transition) {
+    const t = Math.max(0, Math.min(1, (now - state.transition.start) / state.transition.duration));
+    if (t < 0.5) motion.exit = Math.min(1, t / 0.35);
+    else motion.enter = Math.min(1, (t - 0.5) / 0.5);
+    fade = t < 0.5 ? Math.max(0, (t - 0.25) * 4) : Math.max(0, 1 - (t - 0.5) * 4);
   }
-  ctx.textAlign = 'left';
-
-  if (card.type === 'page') {
-    drawDay(state);
-    if (state.bagOpen) drawBag(state);
-    else if (state.personOpen) drawPerson(state);
-    return;
+  state.hotspots.push(...drawScene(ctx, Object.assign({}, world, { place: state.viewPlace }), now, motion));
+  dialogueCard(state, now);
+  [['地图', 'map'], ['背包', 'bag'], ['手记', 'journal'], ['行动', 'actions']].forEach(([label, id], i) => button(state, id, label, i * 100, 666, 90, 44));
+  if (state.panel) {
+    state.hotspots = [];
+    box(0, 105, 390, 555, C.paper, 16);
+    if (state.panel === 'map') district(state, now);
+    if (state.panel === 'bag') bag(state, now);
+    if (state.panel === 'journal') journal(state);
+    if (state.panel === 'actions') actionCards(state, availableActions(world, now), 165, now);
+    text({ map: '展开街区地图', bag: '随身物品', journal: '生活片段', actions: '在这里，你可以…' }[state.panel], 12, 130, 17);
+    button(state, 'close-panel', '收起', 323, 111, 60, 34);
   }
-
-  const view = state.view;
-  const lean = state.dragX / view.width;
-  ctx.fillStyle = '#e7d9c8';
-  roundRect(view.x + 10, view.y - 12, view.width - 20, view.height, 22);
-  ctx.fill();
-  ctx.save();
-  ctx.translate(view.x + view.width / 2 + state.dragX, view.y + view.height / 2);
-  ctx.rotate(state.dragX / 900);
-  ctx.translate(-(view.width / 2), -(view.height / 2));
-  ctx.fillStyle = CARD;
-  roundRect(0, 0, view.width, view.height, 22);
-  ctx.fill();
-  ctx.fillStyle = ROSE;
-  ctx.font = '12px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  ctx.fillText(`${here.name}${here.npc ? ` · ${here.npc}` : ''}`, 18, 18);
-  let lineY = 40;
-  if (life.company && life.company.length) {
-    ctx.fillStyle = '#8a726c';
-    ctx.font = '12px sans-serif';
-    ctx.fillText(`这里还有 ${life.company.join('、')}`, 18, 36);
-    lineY = 54;
+  if (state.dialogue && !state.panel) {
+    state.hotspots = state.hotspots.filter((s) => s.id === 'dialogue' || s.id.startsWith('choice:'));
   }
-  ctx.fillStyle = INK;
-  const body = card.type === 'page' && card.lines && card.lines.length ? card.lines : [card.text];
-  ctx.font = card.type === 'trace' ? '18px sans-serif' : (card.type === 'page' ? '14px sans-serif' : '16px sans-serif');
-  const lineH = card.type === 'page' ? 20 : 24;
-  const cap = card.type === 'page' ? 8 : 5;
-  body.forEach((block) => {
-    wrap(block, view.width - 36).forEach((line) => {
-      if (lineY > 40 + lineH * (cap - 1)) return;
-      ctx.fillText(line, 18, lineY);
-      lineY += lineH;
-    });
-  });
+  if (state.notice && now < state.noticeUntil && !state.panel) {
+    box(8, 431, 374, 30, '#fff7e8', 8);
+    lines(state.notice, 18, 446, 353, 1, 11, C.green);
+  }
+  if (state.transition) {
+    state.hotspots = [];
+    ctx.save(); ctx.globalAlpha = fade; box(0, 105, 390, 555, '#334339', 0); ctx.restore();
+    if (fade > 0.4) text(`正在走进${placeById(world.place).name}…`, 195, 330, 19, '#fff4d8', 'center');
+  }
   ctx.restore();
-
-  const gap = 10;
-  const buttonW = (view.width - gap) / 2;
-  const buttonY = view.y + view.height + 14;
-  choice(state, 'choice-left', card.left.label, view.x, buttonY, buttonW, 54, lean < -0.08);
-  choice(state, 'choice-right', card.right.label, view.x + buttonW + gap, buttonY, buttonW, 54, lean > 0.08);
-  const who = state.db ? state.db.get('select onboarded from player where id=1') : null;
-  if (state.echo && state.real < state.echoUntil) {
-    ctx.fillStyle = ROSE;
-    ctx.font = '13px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(state.echo, SCREEN_WIDTH / 2, buttonY + 72);
-  } else if (card.type === 'trace' || (who && !who.onboarded)) {
-    ctx.fillStyle = '#8a726c';
-    ctx.font = '12px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(card.type === 'trace' ? '这是刚才发生的，看完再滑开' : '按住卡片滑向一边', SCREEN_WIDTH / 2, buttonY + 72);
-  }
-  if (state.bagOpen) drawBag(state);
-  else if (state.personOpen) drawPerson(state);
-  else if (state.mapOpen) {
-    const canGo = card.type !== 'page' && card.type !== 'letter' && card.type !== 'night' && !state.busy;
-    drawMap(state, here, canGo);
-  }
 }

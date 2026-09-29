@@ -14,6 +14,9 @@ function ctx() {
     fillRect() {},
     drawImage() {},
     beginPath() {},
+    rect() {},
+    bezierCurveTo() {},
+    createRadialGradient() { return { addColorStop() {} }; },
     moveTo() {},
     lineTo() {},
     arcTo() {},
@@ -68,9 +71,9 @@ global.wx = {
     });
     return image;
   },
-  getStorageSync: (key) => (Object.prototype.hasOwnProperty.call(store, key) ? store[key] : ''),
+  getStorageSync: (key) => (Object.prototype.hasOwnProperty.call(store, key) ? JSON.parse(JSON.stringify(store[key])) : ''),
   setStorageSync: (key, value) => {
-    store[key] = value;
+    store[key] = JSON.parse(JSON.stringify(value));
   },
   onTouchStart: (fn) => {
     global.__down = fn;
@@ -81,8 +84,10 @@ global.wx = {
   onTouchEnd: (fn) => {
     global.__up = fn;
   },
-  onHide() {},
-  onShow() {},
+  onTouchCancel(fn) { global.__cancel = fn; },
+  onHide(fn) { global.__hide = fn; },
+  onShow(fn) { global.__show = fn; },
+  onKeyboardComplete(fn) { global.__complete = fn; },
   getMenuButtonBoundingClientRect: () => ({ top: 48, bottom: 84, left: 296, right: 384, width: 88, height: 32 }),
   showKeyboard() {},
   hideKeyboard() {},

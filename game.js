@@ -1,7 +1,7 @@
 import './js/render.js';
-import { createGame } from './js/game.js';
+import { createCardGame } from './js/card-game.js';
 
-const game = createGame();
+const game = createCardGame();
 
 function loop(now) {
   game.frame(now);

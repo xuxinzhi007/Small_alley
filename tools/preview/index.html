@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>小巷物语 · 开发预览</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #e7e2da; color: #3a2c28; font: 14px system-ui, sans-serif; }
+    main { display: flex; justify-content: center; align-items: flex-start; gap: 32px; padding: 24px; }
+    aside { max-width: 270px; line-height: 1.8; }
+    h1 { font-size: 22px; }
+    button { padding: 9px 16px; cursor: pointer; }
+    canvas { display: block; width: 390px; height: 844px; max-width: 100%; background: #f3ecdf; touch-action: none; }
+    .device { width: 390px; flex-shrink: 0; overflow: hidden; box-shadow: 0 12px 40px #3a2c2820; }
+    #status { color: #9c4548; white-space: pre-wrap; overflow-wrap: anywhere; }
+    dialog { border: 0; border-radius: 12px; padding: 24px; max-width: 90vw; }
+    dialog input { display: block; margin: 16px 0; padding: 10px; font: inherit; }
+    @media (max-width: 740px) {
+      main { flex-direction: column; align-items: center; padding: 12px; gap: 12px; }
+      aside { max-width: 390px; width: 100%; }
+      h1 { margin: 0; }
+      .device { width: min(390px, 100%); }
+      canvas { height: auto; aspect-ratio: 390 / 844; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <aside>
+      <h1>小巷物语</h1>
+      <p>浏览器开发预览 · 390 × 844</p>
+      <p>命运之手在小巷里做抉择：读一张牌，在两个选择里权衡，或把事搁下由它自己发展。氛围、关系与生存三栏会随着你的决定慢慢变化。此工具不是微信运行环境。</p>
+      <p>进度仅保存在当前浏览器，与微信存档独立。微信胶囊和安全区为模拟尺寸。</p>
+      <button id="reset" type="button">清除预览存档</button>
+      <p id="status" role="status">正在加载…</p>
+    </aside>
+    <div class="device"><canvas id="game" aria-label="小巷物语游戏画面"></canvas></div>
+  </main>
+  <dialog id="keyboard">
+    <form method="dialog">
+      <label for="name">写下生活中的小事（仅保存在本地）</label>
+      <input id="name" autocomplete="off" maxlength="8">
+      <button value="cancel">取消</button>
+      <button value="confirm">确定</button>
+    </form>
+  </dialog>
+  <script type="module" src="./preview.js"></script>
+</body>
+</html>
